@@ -74,6 +74,10 @@ export async function getActiveCategories(): Promise<Category[]> {
   return (await db.categories.toArray()).filter((category) => !category.deletedAt);
 }
 
+export async function getAllCategories(): Promise<Category[]> {
+  return db.categories.toArray();
+}
+
 export async function getActiveRewardRules(): Promise<RewardRule[]> {
   return (await db.rewardRules.toArray()).filter((rule) => !rule.deletedAt);
 }

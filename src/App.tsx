@@ -14,6 +14,7 @@ import {
   db,
   ensureDefaults,
   exportAllData,
+  getAllCategories,
   getActiveCategories,
   getActiveRewardClaims,
   getActiveRewardRules,
@@ -44,6 +45,7 @@ export function App() {
   const [view, setView] = useState<View>("plan");
   const [date, setDate] = useState(todayKey());
   const [categories, setCategories] = useState<Category[]>([]);
+  const [allCategories, setAllCategories] = useState<Category[]>([]);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [reviews, setReviews] = useState<ReviewEntry[]>([]);
   const [rules, setRules] = useState<RewardRule[]>([]);
@@ -88,12 +90,14 @@ export function App() {
     const range = { start: addDays(monthRange.start, -7), end: addDays(monthRange.end, 7) };
     Promise.all([
       getActiveCategories(),
+      getAllCategories(),
       getTasksInRange(range.start, range.end),
       getReviewsInRange(range.start, range.end),
       getActiveRewardRules(),
       getActiveRewardClaims()
-    ]).then(([nextCategories, nextTasks, nextReviews, nextRules, nextClaims]) => {
+    ]).then(([nextCategories, nextAllCategories, nextTasks, nextReviews, nextRules, nextClaims]) => {
       setCategories(nextCategories);
+      setAllCategories(nextAllCategories);
       setTasks(nextTasks);
       setReviews(nextReviews);
       setRules(nextRules);
@@ -103,7 +107,7 @@ export function App() {
 
   const dayTasks = tasks.filter((task) => task.date === date);
   const dayReviews = reviews.filter((entry) => entry.date === date);
-  const categoryMap = useMemo(() => new Map(categories.map((category) => [category.id, category])), [categories]);
+  const categoryMap = useMemo(() => new Map(allCategories.map((category) => [category.id, category])), [allCategories]);
 
   return (
     <div className="app-shell">
@@ -132,11 +136,11 @@ export function App() {
       </nav>
 
       <main>
-        {view === "plan" && <PlanView date={date} categories={categories} tasks={dayTasks} refresh={refresh} syncAndRefresh={syncAndRefresh} />}
+        {view === "plan" && <PlanView date={date} categories={categories} displayCategories={allCategories} tasks={dayTasks} refresh={refresh} syncAndRefresh={syncAndRefresh} />}
         {view === "review" && (
           <ReviewView date={date} categories={categories} tasks={dayTasks} reviews={dayReviews} categoryMap={categoryMap} syncAndRefresh={syncAndRefresh} />
         )}
-        {view === "compare" && <CompareView date={date} categories={categories} tasks={tasks} reviews={reviews} />}
+        {view === "compare" && <CompareView date={date} categories={allCategories} tasks={tasks} reviews={reviews} />}
         {view === "reward" && <RewardView date={date} tasks={tasks} rules={rules} claims={claims} syncAndRefresh={syncAndRefresh} />}
         {view === "settings" && (
           <SettingsView
@@ -157,12 +161,14 @@ export function App() {
 function PlanView({
   date,
   categories,
+  displayCategories,
   tasks,
   refresh,
   syncAndRefresh
 }: {
   date: string;
   categories: Category[];
+  displayCategories: Category[];
   tasks: Task[];
   refresh: () => void;
   syncAndRefresh: (mode?: "startup" | "manual" | "after-write") => Promise<void>;
@@ -207,7 +213,7 @@ function PlanView({
       </form>
       <section className="panel">
         <PanelTitle title="计划色块" meta={`${tasks.length} 个任务`} />
-        <BlockGrid items={tasks} categories={categories} empty="今天还没有计划。" refresh={syncAndRefresh} editable />
+        <BlockGrid items={tasks} categories={displayCategories} empty="今天还没有计划。" refresh={syncAndRefresh} editable />
       </section>
     </section>
   );
@@ -451,6 +457,8 @@ function SettingsView({
   setUserEmail: (email: string | null) => void;
 }) {
   const [email, setEmail] = useState("");
+  const [newCategoryName, setNewCategoryName] = useState("");
+  const [newCategoryColor, setNewCategoryColor] = useState("#7c6f57");
 
   async function exportData() {
     const payload = await exportAllData();
@@ -490,6 +498,22 @@ function SettingsView({
     setSyncState({ status: isSyncConfigured ? "signed-out" : "not-configured", message: "已退出，当前仅本地保存" });
   }
 
+  async function addCategory(event: FormEvent) {
+    event.preventDefault();
+    const cleaned = newCategoryName.trim();
+    if (!cleaned) return;
+    const stamp = nowIso();
+    await db.categories.add({
+      id: createId("category"),
+      name: cleaned,
+      color: newCategoryColor,
+      updatedAt: stamp
+    });
+    setNewCategoryName("");
+    refresh();
+    void syncAndRefresh("after-write");
+  }
+
   return (
     <section className="workspace-grid">
       <section className="panel form-panel">
@@ -513,6 +537,22 @@ function SettingsView({
 
       <section className="panel">
         <PanelTitle title="分类颜色" meta={`${categories.length} 个`} />
+        <form className="category-add-form" onSubmit={addCategory}>
+          <input
+            type="color"
+            value={newCategoryColor}
+            onChange={(event) => setNewCategoryColor(event.target.value)}
+            aria-label="新分类颜色"
+          />
+          <input
+            value={newCategoryName}
+            onChange={(event) => setNewCategoryName(event.target.value)}
+            placeholder="添加分类，比如兴趣爱好"
+          />
+          <button className="icon-button add-category-button" type="submit" aria-label="添加分类">
+            <Plus size={18} />
+          </button>
+        </form>
         <button
           className="secondary reset-button"
           type="button"
@@ -527,7 +567,7 @@ function SettingsView({
         </button>
         <div className="category-list">
           {categories.map((category) => (
-            <label key={category.id} className="category-row">
+            <div key={category.id} className="category-row">
               <input
                 type="color"
                 value={category.color}
@@ -538,7 +578,19 @@ function SettingsView({
                 }}
               />
               <CategoryNameInput category={category} refresh={refresh} syncAndRefresh={syncAndRefresh} />
-            </label>
+              <button
+                type="button"
+                className="icon-button category-delete-button"
+                aria-label={`删除分类 ${category.name}`}
+                onClick={async () => {
+                  await markDeleted("categories", category.id);
+                  refresh();
+                  void syncAndRefresh("after-write");
+                }}
+              >
+                <Trash2 size={16} />
+              </button>
+            </div>
           ))}
         </div>
       </section>

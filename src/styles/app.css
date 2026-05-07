@@ -236,6 +236,7 @@ textarea:focus {
 .category-picker button {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 7px;
   min-height: 38px;
   border: 1px solid #ddd8cb;
@@ -249,14 +250,17 @@ textarea:focus {
 }
 
 .category-picker.compact button {
-  min-width: 38px;
+  width: 46px;
+  height: 56px;
+  min-width: 46px;
+  min-height: 56px;
   padding: 0;
 }
 
 .category-picker button span,
 .swatch,
 .block-dot {
-  display: inline-block;
+  display: block;
   width: 14px;
   height: 14px;
   border-radius: 4px;
@@ -429,6 +433,13 @@ textarea:focus {
   gap: 10px;
 }
 
+.category-add-form {
+  display: grid;
+  grid-template-columns: 64px minmax(120px, 1fr) 44px;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
 .reset-button {
   width: 100%;
   margin-bottom: 12px;
@@ -436,13 +447,25 @@ textarea:focus {
 
 .category-row {
   display: grid;
-  grid-template-columns: 52px 1fr;
+  grid-template-columns: 64px minmax(120px, 1fr) 44px;
+  align-items: center;
   gap: 10px;
 }
 
-.category-row input[type="color"] {
+.category-row input[type="color"],
+.category-add-form input[type="color"] {
   height: 44px;
   padding: 4px;
+}
+
+.add-category-button,
+.category-delete-button {
+  border: 1px solid #d8d1c2;
+  background: #fffefa;
+}
+
+.category-delete-button {
+  color: #9f3f35;
 }
 
 .file-button input {
@@ -470,6 +493,11 @@ textarea:focus {
 
   .inline-form {
     grid-template-columns: 1fr;
+  }
+
+  .category-add-form,
+  .category-row {
+    grid-template-columns: 52px minmax(0, 1fr) 44px;
   }
 
   .category-picker.compact {
