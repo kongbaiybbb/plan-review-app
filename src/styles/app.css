@@ -429,6 +429,11 @@ textarea:focus {
   gap: 10px;
 }
 
+.reset-button {
+  width: 100%;
+  margin-bottom: 12px;
+}
+
 .category-row {
   display: grid;
   grid-template-columns: 52px 1fr;

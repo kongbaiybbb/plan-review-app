@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ChangeEvent, type FormEvent, type KeyboardEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type ChangeEvent, type FormEvent, type KeyboardEvent } from "react";
 import {
   CalendarCheck,
   ChartNoAxesCombined,
@@ -21,7 +21,8 @@ import {
   getTasksInRange,
   importAllData,
   markDeleted,
-  nowIso
+  nowIso,
+  defaultCategories
 } from "./lib/db";
 import { addDays, formatZhDate, getPeriodRange, periodKey, rangeLabel, todayKey } from "./lib/date";
 import { calculateCompletion, completionTone, isRewardMet } from "./lib/stats";
@@ -512,6 +513,18 @@ function SettingsView({
 
       <section className="panel">
         <PanelTitle title="分类颜色" meta={`${categories.length} 个`} />
+        <button
+          className="secondary reset-button"
+          type="button"
+          onClick={async () => {
+            const stamp = nowIso();
+            await Promise.all(defaultCategories.map((category) => db.categories.update(category.id, { name: category.name, color: category.color, updatedAt: stamp, deletedAt: undefined })));
+            refresh();
+            void syncAndRefresh("after-write");
+          }}
+        >
+          恢复默认分类
+        </button>
         <div className="category-list">
           {categories.map((category) => (
             <label key={category.id} className="category-row">
@@ -551,16 +564,14 @@ function CategoryNameInput({
   refresh: () => void;
   syncAndRefresh: (mode?: "startup" | "manual" | "after-write") => Promise<void>;
 }) {
-  const [draft, setDraft] = useState(category.name);
-
-  useEffect(() => {
-    setDraft(category.name);
-  }, [category.id, category.name]);
+  const inputRef = useRef<HTMLInputElement>(null);
 
   async function save() {
-    const cleaned = draft.trim();
+    const input = inputRef.current;
+    if (!input) return;
+    const cleaned = input.value.trim();
     if (!cleaned || cleaned === category.name) {
-      setDraft(category.name);
+      input.value = category.name;
       return;
     }
     await db.categories.update(category.id, { name: cleaned, updatedAt: nowIso() });
@@ -576,8 +587,8 @@ function CategoryNameInput({
 
   return (
     <input
-      value={draft}
-      onChange={(event) => setDraft(event.target.value)}
+      ref={inputRef}
+      defaultValue={category.name}
       onBlur={save}
       onKeyDown={handleKeyDown}
     />
