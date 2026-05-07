@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ChangeEvent, type FormEvent } from "react";
+import { useEffect, useMemo, useState, type ChangeEvent, type FormEvent, type KeyboardEvent } from "react";
 import {
   CalendarCheck,
   ChartNoAxesCombined,
@@ -524,14 +524,7 @@ function SettingsView({
                   void syncAndRefresh("after-write");
                 }}
               />
-              <input
-                value={category.name}
-                onChange={async (event) => {
-                  await db.categories.update(category.id, { name: event.target.value, updatedAt: nowIso() });
-                  refresh();
-                  void syncAndRefresh("after-write");
-                }}
-              />
+              <CategoryNameInput category={category} refresh={refresh} syncAndRefresh={syncAndRefresh} />
             </label>
           ))}
         </div>
@@ -546,6 +539,48 @@ function SettingsView({
         </label>
       </section>
     </section>
+  );
+}
+
+function CategoryNameInput({
+  category,
+  refresh,
+  syncAndRefresh
+}: {
+  category: Category;
+  refresh: () => void;
+  syncAndRefresh: (mode?: "startup" | "manual" | "after-write") => Promise<void>;
+}) {
+  const [draft, setDraft] = useState(category.name);
+
+  useEffect(() => {
+    setDraft(category.name);
+  }, [category.id, category.name]);
+
+  async function save() {
+    const cleaned = draft.trim();
+    if (!cleaned || cleaned === category.name) {
+      setDraft(category.name);
+      return;
+    }
+    await db.categories.update(category.id, { name: cleaned, updatedAt: nowIso() });
+    refresh();
+    void syncAndRefresh("after-write");
+  }
+
+  function handleKeyDown(event: KeyboardEvent<HTMLInputElement>) {
+    if (event.key === "Enter") {
+      event.currentTarget.blur();
+    }
+  }
+
+  return (
+    <input
+      value={draft}
+      onChange={(event) => setDraft(event.target.value)}
+      onBlur={save}
+      onKeyDown={handleKeyDown}
+    />
   );
 }
 
