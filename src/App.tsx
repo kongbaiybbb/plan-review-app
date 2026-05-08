@@ -3,6 +3,7 @@ import {
   CalendarCheck,
   ChartNoAxesCombined,
   ClipboardList,
+  BookOpenText,
   Gift,
   Plus,
   RefreshCw,
@@ -19,24 +20,26 @@ import {
   getActiveRewardClaims,
   getActiveRewardRules,
   getReviewsInRange,
+  getJournalEntriesInRange,
   getTasksInRange,
   importAllData,
   markDeleted,
   nowIso,
   defaultCategories
 } from "./lib/db";
-import { addDays, formatZhDate, getPeriodRange, periodKey, rangeLabel, todayKey } from "./lib/date";
+import { addDays, daysInMonth, endOfMonth, formatZhDate, getPeriodRange, parseDateKey, periodKey, rangeLabel, startOfMonth, todayKey } from "./lib/date";
 import { calculateCompletion, completionTone, isRewardMet } from "./lib/stats";
-import { getSession, signInWithEmail, signOut, supabase, isSyncConfigured } from "./lib/supabase";
+import { getSession, signInWithEmailPassword, signOut, signUpWithEmailPassword, supabase, isSyncConfigured } from "./lib/supabase";
 import { initialSyncState, syncNow, type SyncState } from "./lib/sync";
-import type { Category, Period, ReviewEntry, RewardRule, Task } from "./lib/types";
+import type { Category, JournalEntry, Period, ReviewEntry, RewardRule, Task } from "./lib/types";
 
-type View = "plan" | "review" | "compare" | "reward" | "settings";
+type View = "plan" | "review" | "compare" | "journal" | "reward" | "settings";
 
 const viewItems: Array<{ id: View; label: string; icon: typeof ClipboardList }> = [
   { id: "plan", label: "规划", icon: ClipboardList },
   { id: "review", label: "复盘", icon: CalendarCheck },
   { id: "compare", label: "对比", icon: ChartNoAxesCombined },
+  { id: "journal", label: "日志", icon: BookOpenText },
   { id: "reward", label: "奖励", icon: Gift },
   { id: "settings", label: "设置", icon: Settings }
 ];
@@ -48,6 +51,7 @@ export function App() {
   const [allCategories, setAllCategories] = useState<Category[]>([]);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [reviews, setReviews] = useState<ReviewEntry[]>([]);
+  const [journalEntries, setJournalEntries] = useState<JournalEntry[]>([]);
   const [rules, setRules] = useState<RewardRule[]>([]);
   const [claims, setClaims] = useState<string[]>([]);
   const [refreshKey, setRefreshKey] = useState(0);
@@ -93,13 +97,15 @@ export function App() {
       getAllCategories(),
       getTasksInRange(range.start, range.end),
       getReviewsInRange(range.start, range.end),
+      getJournalEntriesInRange(monthRange.start, monthRange.end),
       getActiveRewardRules(),
       getActiveRewardClaims()
-    ]).then(([nextCategories, nextAllCategories, nextTasks, nextReviews, nextRules, nextClaims]) => {
+    ]).then(([nextCategories, nextAllCategories, nextTasks, nextReviews, nextJournalEntries, nextRules, nextClaims]) => {
       setCategories(nextCategories);
       setAllCategories(nextAllCategories);
       setTasks(nextTasks);
       setReviews(nextReviews);
+      setJournalEntries(nextJournalEntries);
       setRules(nextRules);
       setClaims(nextClaims.map((claim) => `${claim.ruleId}:${claim.periodKey}`));
     });
@@ -141,6 +147,7 @@ export function App() {
           <ReviewView date={date} categories={categories} tasks={dayTasks} reviews={dayReviews} categoryMap={categoryMap} syncAndRefresh={syncAndRefresh} />
         )}
         {view === "compare" && <CompareView date={date} categories={allCategories} tasks={tasks} reviews={reviews} />}
+        {view === "journal" && <JournalView date={date} entries={journalEntries} setDate={setDate} syncAndRefresh={syncAndRefresh} />}
         {view === "reward" && <RewardView date={date} tasks={tasks} rules={rules} claims={claims} syncAndRefresh={syncAndRefresh} />}
         {view === "settings" && (
           <SettingsView
@@ -236,34 +243,40 @@ function ReviewView({
 }) {
   const [title, setTitle] = useState("");
   const [categoryId, setCategoryId] = useState(categories[0]?.id ?? "");
+  const [slidingTaskIds, setSlidingTaskIds] = useState<string[]>([]);
   const stats = calculateCompletion(tasks);
+  const pendingTasks = tasks.filter((task) => !task.completed);
 
   useEffect(() => {
     if (!categoryId && categories[0]) setCategoryId(categories[0].id);
   }, [categories, categoryId]);
 
   async function toggleTask(task: Task) {
+    setSlidingTaskIds((ids) => [...new Set([...ids, task.id])]);
+    window.setTimeout(() => {
+      void completeTask(task);
+    }, 260);
+  }
+
+  async function completeTask(task: Task) {
     const stamp = nowIso();
-    const nextCompleted = !task.completed;
-    await db.tasks.update(task.id, { completed: nextCompleted, updatedAt: stamp });
+    await db.tasks.update(task.id, { completed: true, updatedAt: stamp });
     const existing = await db.reviewEntries.where("taskId").equals(task.id).first();
-    if (nextCompleted) {
-      if (existing) {
-        await db.reviewEntries.put({ ...existing, deletedAt: undefined, updatedAt: stamp });
-      } else {
-        await db.reviewEntries.add({
-          id: createId("review"),
-          date: task.date,
-          title: task.title,
-          categoryId: task.categoryId,
-          taskId: task.id,
-          isAdHoc: false,
-          createdAt: stamp,
-          updatedAt: stamp
-        });
-      }
+    if (existing) {
+      await db.reviewEntries.put({ ...existing, deletedAt: undefined, updatedAt: stamp });
+    } else {
+      await db.reviewEntries.add({
+        id: createId("review"),
+        date: task.date,
+        title: task.title,
+        categoryId: task.categoryId,
+        taskId: task.id,
+        isAdHoc: false,
+        createdAt: stamp,
+        updatedAt: stamp
+      });
     }
-    if (!nextCompleted && existing) await markDeleted("reviewEntries", existing.id);
+    setSlidingTaskIds((ids) => ids.filter((id) => id !== task.id));
     await syncAndRefresh("after-write");
   }
 
@@ -292,11 +305,12 @@ function ReviewView({
         <div className={`meter ${completionTone(stats.percent)}`}><span style={{ width: `${stats.percent}%` }} /></div>
         <div className="check-list">
           {tasks.length === 0 && <p className="empty">今天暂无计划。</p>}
-          {tasks.map((task) => {
+          {tasks.length > 0 && pendingTasks.length === 0 && <p className="empty">计划任务都完成了。</p>}
+          {pendingTasks.map((task) => {
             const category = categoryMap.get(task.categoryId);
             return (
-              <label key={task.id} className="check-row">
-                <input type="checkbox" checked={task.completed} onChange={() => toggleTask(task)} />
+              <label key={task.id} className={slidingTaskIds.includes(task.id) ? "check-row slide-out" : "check-row"}>
+                <input type="checkbox" checked={slidingTaskIds.includes(task.id)} onChange={() => toggleTask(task)} disabled={slidingTaskIds.includes(task.id)} />
                 <span className="swatch" style={{ background: category?.color }} />
                 <span>{task.title}</span>
               </label>
@@ -323,6 +337,7 @@ function CompareView({ date, categories, tasks, reviews }: { date: string; categ
   const rangeTasks = tasks.filter((task) => task.date >= range.start && task.date <= range.end);
   const rangeReviews = reviews.filter((entry) => entry.date >= range.start && entry.date <= range.end);
   const stats = calculateCompletion(rangeTasks);
+  const rangeDays = getDaysInRange(range.start, range.end);
 
   return (
     <section className="stack">
@@ -337,17 +352,361 @@ function CompareView({ date, categories, tasks, reviews }: { date: string; categ
         </div>
         <div className={`score ${completionTone(stats.percent)}`}>{stats.percent}%</div>
       </div>
+      <MonthlyHeatmap date={date} tasks={tasks} />
       <section className="compare-grid">
         <div className="panel">
           <PanelTitle title="计划" meta={`${rangeTasks.length} 个`} />
-          <BlockGrid items={rangeTasks} categories={categories} empty="该周期暂无计划。" />
+          <GroupedDayBlocks days={rangeDays} items={rangeTasks} categories={categories} empty="该周期暂无计划。" />
         </div>
         <div className="panel">
           <PanelTitle title="实际" meta={`${rangeReviews.length} 个`} />
-          <BlockGrid items={rangeReviews} categories={categories} empty="该周期暂无复盘记录。" />
+          <GroupedDayBlocks days={rangeDays} items={rangeReviews} categories={categories} empty="该周期暂无复盘记录。" />
         </div>
       </section>
+      <ActualCategoryGantt days={rangeDays} reviews={rangeReviews} categories={categories} />
     </section>
+  );
+}
+
+function getDaysInRange(start: string, end: string) {
+  const days: string[] = [];
+  let cursor = start;
+  while (cursor <= end) {
+    days.push(cursor);
+    cursor = addDays(cursor, 1);
+  }
+  return days;
+}
+
+function GroupedDayBlocks({
+  days,
+  items,
+  categories,
+  empty
+}: {
+  days: string[];
+  items: Array<Task | ReviewEntry>;
+  categories: Category[];
+  empty: string;
+}) {
+  const categoryMap = new Map(categories.map((category) => [category.id, category]));
+  if (items.length === 0) return <p className="empty">{empty}</p>;
+
+  return (
+    <div className="day-group-list">
+      {days.map((day) => {
+        const dayItems = items.filter((item) => item.date === day);
+        if (dayItems.length === 0) return null;
+        const categoryIds = [...new Set(dayItems.map((item) => item.categoryId))];
+        return (
+          <section key={day} className="day-group">
+            <div className="day-group-title">
+              <strong>{formatZhDate(day)}</strong>
+              <span>{dayItems.length} 个</span>
+            </div>
+            <div className="category-group-list">
+              {categoryIds.map((categoryId) => {
+                const category = categoryMap.get(categoryId);
+                const categoryItems = dayItems.filter((item) => item.categoryId === categoryId);
+                return (
+                  <div key={categoryId} className="category-group">
+                    <div className="category-group-title">
+                      <span className="swatch" style={{ background: category?.color }} />
+                      <strong>{category?.name ?? "未分类"}</strong>
+                      <small>{categoryItems.length}</small>
+                    </div>
+                    <BlockGrid items={categoryItems} categories={categories} empty="" />
+                  </div>
+                );
+              })}
+            </div>
+          </section>
+        );
+      })}
+    </div>
+  );
+}
+
+function ActualCategoryGantt({ days, reviews, categories }: { days: string[]; reviews: ReviewEntry[]; categories: Category[] }) {
+  const categoryMap = new Map(categories.map((category) => [category.id, category]));
+
+  return (
+    <section className="panel gantt-panel">
+      <PanelTitle title="实际分类甘特图" meta="按复盘记录占比" />
+      <div className="gantt-list">
+        {days.map((day) => {
+          const dayReviews = reviews.filter((entry) => entry.date === day);
+          const total = dayReviews.length;
+          const categoryIds = [...new Set(dayReviews.map((entry) => entry.categoryId))];
+          return (
+            <div key={day} className="gantt-row">
+              <div className="gantt-date">
+                <strong>{formatZhDate(day)}</strong>
+                <span>{total ? `${total} 条` : "无记录"}</span>
+              </div>
+              {total === 0 ? (
+                <div className="gantt-empty">暂无实际记录</div>
+              ) : (
+                <div className="gantt-bar">
+                  {categoryIds.map((categoryId) => {
+                    const category = categoryMap.get(categoryId);
+                    const count = dayReviews.filter((entry) => entry.categoryId === categoryId).length;
+                    const percent = Math.round((count / total) * 100);
+                    return (
+                      <div
+                        key={categoryId}
+                        className="gantt-segment"
+                        style={{ width: `${percent}%`, background: category?.color ?? "#888" }}
+                        title={`${category?.name ?? "未分类"} · ${count} 条 · ${percent}%`}
+                      >
+                        <span>{category?.name ?? "未分类"}</span>
+                        <strong>{count}</strong>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+function MonthlyHeatmap({ date, tasks }: { date: string; tasks: Task[] }) {
+  const monthDays = daysInMonth(date);
+  const leadingBlanks = (parseDateKey(startOfMonth(date)).getDay() + 6) % 7;
+  const weekdays = ["一", "二", "三", "四", "五", "六", "日"];
+
+  return (
+    <section className="panel heatmap-panel">
+      <PanelTitle title="本月热力图" meta={startOfMonth(date).slice(0, 7)} />
+      <div className="heatmap-legend" aria-label="热力图图例">
+        <span><span className="legend-dot perfect" />😎 perfect</span>
+        <span><span className="legend-dot good" />🙂 good</span>
+        <span><span className="legend-dot bad" />😭 拉完了</span>
+        <span><span className="legend-dot empty-day" />无计划</span>
+      </div>
+      <div className="heatmap-weekdays" aria-hidden="true">
+        {weekdays.map((weekday) => <span key={weekday}>{weekday}</span>)}
+      </div>
+      <div className="heatmap-grid">
+        {Array.from({ length: leadingBlanks }).map((_, index) => (
+          <span key={`blank-${index}`} className="heatmap-blank" />
+        ))}
+        {monthDays.map((day) => {
+          const stats = calculateCompletion(tasks.filter((task) => task.date === day));
+          const state = getHeatmapState(stats.percent, stats.hasPlan);
+          const dayNumber = parseDateKey(day).getDate();
+          return (
+            <article key={day} className={`heatmap-day ${state.className}`} title={`${day} · ${stats.label} · ${state.label}`}>
+              <strong>{dayNumber}</strong>
+              {stats.hasPlan ? (
+                <>
+                  <span className="heatmap-emoji">{state.emoji}</span>
+                  <small>{stats.percent}% {state.label}</small>
+                </>
+              ) : (
+                <small>无计划</small>
+              )}
+            </article>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+function getHeatmapState(percent: number, hasPlan: boolean) {
+  if (!hasPlan) return { className: "no-plan", emoji: "", label: "无计划" };
+  if (percent >= 80) return { className: "perfect", emoji: "😎", label: "perfect" };
+  if (percent >= 40) return { className: "good", emoji: "🙂", label: "good" };
+  return { className: "bad", emoji: "😭", label: "拉完了" };
+}
+
+const moodOptions = ["🙂", "😐", "😔", "🔥", "🌧️", "😌"];
+
+function emptyJournalDraft(date: string) {
+  return {
+    date,
+    moodEmoji: "🙂",
+    moodText: "",
+    energyLevel: 3,
+    stressLevel: 3,
+    focusLevel: 3,
+    bodyState: "",
+    mindState: "",
+    keyEvents: "",
+    gratitudeText: "",
+    reflectionText: "",
+    tomorrowText: "",
+    freeText: "",
+    promptsOpen: true
+  };
+}
+
+function JournalView({
+  date,
+  entries,
+  setDate,
+  syncAndRefresh
+}: {
+  date: string;
+  entries: JournalEntry[];
+  setDate: (date: string) => void;
+  syncAndRefresh: (mode?: "startup" | "manual" | "after-write") => Promise<void>;
+}) {
+  const activeEntry = entries.find((entry) => entry.date === date);
+  const [draft, setDraft] = useState(emptyJournalDraft(date));
+  const monthDays = daysInMonth(date);
+  const leadingBlanks = (parseDateKey(startOfMonth(date)).getDay() + 6) % 7;
+  const recentEntries = [...entries].sort((a, b) => b.date.localeCompare(a.date)).slice(0, 8);
+  const entryDates = new Set(entries.map((entry) => entry.date));
+
+  useEffect(() => {
+    setDraft({
+      ...emptyJournalDraft(date),
+      ...activeEntry,
+      moodEmoji: activeEntry?.moodEmoji ?? "🙂",
+      moodText: activeEntry?.moodText ?? "",
+      energyLevel: activeEntry?.energyLevel ?? 3,
+      stressLevel: activeEntry?.stressLevel ?? 3,
+      focusLevel: activeEntry?.focusLevel ?? 3,
+      bodyState: activeEntry?.bodyState ?? "",
+      mindState: activeEntry?.mindState ?? "",
+      keyEvents: activeEntry?.keyEvents ?? "",
+      gratitudeText: activeEntry?.gratitudeText ?? "",
+      reflectionText: activeEntry?.reflectionText ?? "",
+      tomorrowText: activeEntry?.tomorrowText ?? "",
+      freeText: activeEntry?.freeText ?? "",
+      promptsOpen: activeEntry?.promptsOpen ?? true
+    });
+  }, [activeEntry?.id, activeEntry?.updatedAt, date]);
+
+  function updateDraft<K extends keyof ReturnType<typeof emptyJournalDraft>>(key: K, value: ReturnType<typeof emptyJournalDraft>[K]) {
+    setDraft((current) => ({ ...current, [key]: value }));
+  }
+
+  async function saveJournal(event: FormEvent) {
+    event.preventDefault();
+    const stamp = nowIso();
+    const payload = {
+      date,
+      moodEmoji: draft.moodEmoji || undefined,
+      moodText: draft.moodText.trim() || undefined,
+      energyLevel: draft.energyLevel,
+      stressLevel: draft.stressLevel,
+      focusLevel: draft.focusLevel,
+      bodyState: draft.bodyState.trim() || undefined,
+      mindState: draft.mindState.trim() || undefined,
+      keyEvents: draft.keyEvents.trim() || undefined,
+      gratitudeText: draft.gratitudeText.trim() || undefined,
+      reflectionText: draft.reflectionText.trim() || undefined,
+      tomorrowText: draft.tomorrowText.trim() || undefined,
+      freeText: draft.freeText.trim() || undefined,
+      promptsOpen: draft.promptsOpen,
+      updatedAt: stamp,
+      deletedAt: undefined
+    };
+
+    if (activeEntry) {
+      await db.journalEntries.put({ ...activeEntry, ...payload });
+    } else {
+      await db.journalEntries.add({
+        id: createId("journal"),
+        createdAt: stamp,
+        ...payload
+      });
+    }
+    await syncAndRefresh("after-write");
+  }
+
+  async function deleteJournal() {
+    if (!activeEntry) return;
+    await markDeleted("journalEntries", activeEntry.id);
+    await syncAndRefresh("after-write");
+  }
+
+  return (
+    <section className="workspace-grid journal-layout">
+      <section className="panel journal-sidebar">
+        <PanelTitle title="日志月历" meta={startOfMonth(date).slice(0, 7)} />
+        <div className="journal-calendar-weekdays" aria-hidden="true">
+          {["一", "二", "三", "四", "五", "六", "日"].map((weekday) => <span key={weekday}>{weekday}</span>)}
+        </div>
+        <div className="journal-calendar">
+          {Array.from({ length: leadingBlanks }).map((_, index) => <span key={`journal-blank-${index}`} />)}
+          {monthDays.map((day) => {
+            const hasEntry = entryDates.has(day);
+            const isSelected = day === date;
+            return (
+              <button key={day} type="button" className={`${hasEntry ? "has-entry" : ""} ${isSelected ? "selected" : ""}`} onClick={() => setDate(day)}>
+                <strong>{parseDateKey(day).getDate()}</strong>
+                {hasEntry && <span>•</span>}
+              </button>
+            );
+          })}
+        </div>
+        <PanelTitle title="最近日志" meta={`${recentEntries.length} 篇`} />
+        <div className="journal-recent-list">
+          {recentEntries.length === 0 && <p className="empty">还没有日志。</p>}
+          {recentEntries.map((entry) => (
+            <button key={entry.id} type="button" className={entry.date === date ? "active" : ""} onClick={() => setDate(entry.date)}>
+              <span>{entry.moodEmoji ?? "📝"}</span>
+              <div>
+                <strong>{formatZhDate(entry.date)}</strong>
+                <small>{entry.moodText || entry.freeText || entry.reflectionText || "未填写摘要"}</small>
+              </div>
+            </button>
+          ))}
+        </div>
+      </section>
+
+      <form className="panel journal-editor" onSubmit={saveJournal}>
+        <PanelTitle title="今日日志" meta={formatZhDate(date)} />
+        <div className="mood-picker">
+          {moodOptions.map((emoji) => (
+            <button key={emoji} type="button" className={draft.moodEmoji === emoji ? "selected" : ""} onClick={() => updateDraft("moodEmoji", emoji)}>
+              {emoji}
+            </button>
+          ))}
+        </div>
+        <input value={draft.moodText} onChange={(event) => updateDraft("moodText", event.target.value)} placeholder="今天的情绪或状态关键词" />
+        <div className="journal-metrics">
+          <NumberField label="精力" value={draft.energyLevel} onChange={(value) => updateDraft("energyLevel", value)} />
+          <NumberField label="压力" value={draft.stressLevel} onChange={(value) => updateDraft("stressLevel", value)} />
+          <NumberField label="专注" value={draft.focusLevel} onChange={(value) => updateDraft("focusLevel", value)} />
+        </div>
+        <textarea value={draft.bodyState} onChange={(event) => updateDraft("bodyState", event.target.value)} placeholder="身体状态" />
+        <textarea value={draft.mindState} onChange={(event) => updateDraft("mindState", event.target.value)} placeholder="心理状态" />
+        <textarea value={draft.keyEvents} onChange={(event) => updateDraft("keyEvents", event.target.value)} placeholder="今日关键事件" />
+        <button className="secondary" type="button" onClick={() => updateDraft("promptsOpen", !draft.promptsOpen)}>
+          {draft.promptsOpen ? "收起引导问题" : "展开引导问题"}
+        </button>
+        {draft.promptsOpen && (
+          <div className="journal-prompts">
+            <textarea value={draft.gratitudeText} onChange={(event) => updateDraft("gratitudeText", event.target.value)} placeholder="今天感谢" />
+            <textarea value={draft.reflectionText} onChange={(event) => updateDraft("reflectionText", event.target.value)} placeholder="今天反思" />
+            <textarea value={draft.tomorrowText} onChange={(event) => updateDraft("tomorrowText", event.target.value)} placeholder="明日提醒" />
+          </div>
+        )}
+        <textarea className="journal-free-text" value={draft.freeText} onChange={(event) => updateDraft("freeText", event.target.value)} placeholder="自由日记正文" />
+        <div className="journal-actions">
+          <button className="primary" type="submit">保存日志</button>
+          <button className="secondary" type="button" disabled={!activeEntry} onClick={deleteJournal}>删除日志</button>
+        </div>
+      </form>
+    </section>
+  );
+}
+
+function NumberField({ label, value, onChange }: { label: string; value: number; onChange: (value: number) => void }) {
+  return (
+    <label className="number-field">
+      <span>{label} {value}</span>
+      <input type="range" min="1" max="5" value={value} onChange={(event) => onChange(Number(event.target.value))} />
+    </label>
   );
 }
 
@@ -367,6 +726,7 @@ function RewardView({
   const [period, setPeriod] = useState<Period>("week");
   const [threshold, setThreshold] = useState(80);
   const [rewardText, setRewardText] = useState("");
+  const [claimingRuleIds, setClaimingRuleIds] = useState<string[]>([]);
 
   async function addRule(event: FormEvent) {
     event.preventDefault();
@@ -390,6 +750,7 @@ function RewardView({
       <form className="panel form-panel" onSubmit={addRule}>
         <h2>目标奖励</h2>
         <div className="segmented full">
+          <button type="button" className={period === "day" ? "active" : ""} onClick={() => setPeriod("day")}>日</button>
           <button type="button" className={period === "week" ? "active" : ""} onClick={() => setPeriod("week")}>周</button>
           <button type="button" className={period === "month" ? "active" : ""} onClick={() => setPeriod("month")}>月</button>
         </div>
@@ -407,16 +768,24 @@ function RewardView({
           const key = periodKey(rule.period, date);
           const met = isRewardMet(rule, stats);
           const claimed = claims.includes(`${rule.id}:${key}`);
+          const animating = claimingRuleIds.includes(rule.id);
           return (
-            <article key={rule.id} className="reward-card">
-              <div>
-                <strong>{rule.rewardText}</strong>
-                <p>{rule.period === "week" ? "每周" : "每月"} · 门槛 {rule.thresholdPercent}% · 当前 {stats.percent}%</p>
+            <article key={rule.id} className={animating ? "reward-card claimed-flash" : "reward-card"}>
+              <div className="reward-card-main">
+                <div className="reward-card-head">
+                  <strong>{rule.rewardText}</strong>
+                  <span>{periodLabel(rule.period)} · 门槛 {rule.thresholdPercent}%</span>
+                </div>
+                <div className={`reward-progress ${completionTone(stats.percent)}`}>
+                  <span style={{ width: `${stats.percent}%` }} />
+                </div>
+                <p>{stats.hasPlan ? `${stats.completed}/${stats.planned} · 当前 ${stats.percent}%` : "暂无计划"}</p>
               </div>
               <button
                 className={met ? "primary small" : "small"}
                 disabled={!met || claimed}
                 onClick={async () => {
+                  setClaimingRuleIds((ids) => [...new Set([...ids, rule.id])]);
                   const stamp = nowIso();
                   await db.rewardClaims.add({
                     id: createId("claim"),
@@ -427,6 +796,9 @@ function RewardView({
                     updatedAt: stamp
                   });
                   await syncAndRefresh("after-write");
+                  window.setTimeout(() => {
+                    setClaimingRuleIds((ids) => ids.filter((id) => id !== rule.id));
+                  }, 760);
                 }}
               >
                 {claimed ? "已领取" : met ? "领取" : "未达标"}
@@ -437,6 +809,12 @@ function RewardView({
       </section>
     </section>
   );
+}
+
+function periodLabel(period: Period) {
+  if (period === "day") return "每日";
+  if (period === "week") return "每周";
+  return "每月";
 }
 
 function SettingsView({
@@ -457,6 +835,7 @@ function SettingsView({
   setUserEmail: (email: string | null) => void;
 }) {
   const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
   const [newCategoryName, setNewCategoryName] = useState("");
   const [newCategoryColor, setNewCategoryColor] = useState("#7c6f57");
 
@@ -480,16 +859,42 @@ function SettingsView({
     void syncAndRefresh("after-write");
   }
 
-  async function sendMagicLink(event: FormEvent) {
-    event.preventDefault();
-    const cleaned = email.trim();
-    if (!cleaned) return;
-    try {
-      await signInWithEmail(cleaned);
-      setSyncState({ status: "signed-out", message: "登录邮件已发送，请在电脑或手机邮箱中打开链接" });
-    } catch (error) {
-      setSyncState({ status: "error", message: error instanceof Error ? error.message : "发送登录邮件失败" });
+  async function handlePasswordAuth(action: "sign-in" | "sign-up") {
+    const cleanedEmail = email.trim();
+    if (!cleanedEmail || !password) {
+      setSyncState({ status: "error", message: "请输入邮箱和密码。" });
+      return;
     }
+    if (password.length < 6) {
+      setSyncState({ status: "error", message: "密码至少需要 6 位。" });
+      return;
+    }
+    try {
+      const session =
+        action === "sign-in"
+          ? await signInWithEmailPassword(cleanedEmail, password)
+          : await signUpWithEmailPassword(cleanedEmail, password);
+      const nextSession = session ?? (await getSession());
+
+      if (nextSession?.user) {
+        setUserEmail(nextSession.user.email ?? cleanedEmail);
+        setSyncState({ status: "syncing", message: action === "sign-in" ? "登录成功，正在同步" : "注册成功，正在同步" });
+        await syncAndRefresh("startup");
+        return;
+      }
+
+      setSyncState({
+        status: "signed-out",
+        message: "注册邮件已发送，请先确认邮箱，再返回这里登录。"
+      });
+    } catch (error) {
+      setSyncState({ status: "error", message: getAuthErrorMessage(error) });
+    }
+  }
+
+  async function submitPasswordLogin(event: FormEvent) {
+    event.preventDefault();
+    await handlePasswordAuth("sign-in");
   }
 
   async function handleSignOut() {
@@ -527,9 +932,13 @@ function SettingsView({
             <button type="button" className="secondary" onClick={handleSignOut}>退出登录</button>
           </>
         ) : (
-          <form className="form-panel compact-form" onSubmit={sendMagicLink}>
-            <input value={email} onChange={(event) => setEmail(event.target.value)} type="email" placeholder="输入邮箱接收登录链接" disabled={!isSyncConfigured} />
-            <button className="primary" type="submit" disabled={!isSyncConfigured}>发送登录邮件</button>
+          <form className="form-panel compact-form" onSubmit={submitPasswordLogin}>
+            <input value={email} onChange={(event) => setEmail(event.target.value)} type="email" placeholder="邮箱" autoComplete="email" disabled={!isSyncConfigured} />
+            <input value={password} onChange={(event) => setPassword(event.target.value)} type="password" placeholder="密码，至少 6 位" autoComplete="current-password" disabled={!isSyncConfigured} />
+            <div className="auth-actions">
+              <button className="primary" type="submit" disabled={!isSyncConfigured}>登录</button>
+              <button className="secondary" type="button" disabled={!isSyncConfigured} onClick={() => handlePasswordAuth("sign-up")}>注册</button>
+            </div>
           </form>
         )}
         {!isSyncConfigured && <p className="empty">请先在 `.env` 中配置 Supabase URL 和 anon key。</p>}
@@ -645,6 +1054,17 @@ function CategoryNameInput({
       onKeyDown={handleKeyDown}
     />
   );
+}
+
+function getAuthErrorMessage(error: unknown) {
+  const message = error instanceof Error ? error.message : "登录失败，请稍后再试。";
+  const normalized = message.toLowerCase();
+  if (normalized.includes("invalid login credentials")) return "邮箱或密码不正确。";
+  if (normalized.includes("email not confirmed")) return "邮箱还没有确认，请先打开确认邮件。";
+  if (normalized.includes("already registered") || normalized.includes("user already registered")) return "这个邮箱已经注册，请直接登录。";
+  if (normalized.includes("password")) return message;
+  if (normalized.includes("rate limit")) return "操作太频繁，请稍后再试。";
+  return message;
 }
 
 function PanelTitle({ title, meta }: { title: string; meta: string }) {

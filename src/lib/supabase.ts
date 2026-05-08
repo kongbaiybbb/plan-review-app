@@ -13,6 +13,13 @@ function isValidSupabaseUrl(value: string | undefined): value is string {
   }
 }
 
+function requireSupabase() {
+  if (!supabase) {
+    throw new Error("Supabase 未配置正确，请检查 .env 中的 URL 和 anon key。");
+  }
+  return supabase;
+}
+
 export const isSyncConfigured = Boolean(isValidSupabaseUrl(supabaseUrl) && supabaseAnonKey);
 
 export const supabase: SupabaseClient | null = isSyncConfigured
@@ -32,15 +39,18 @@ export async function getSession(): Promise<Session | null> {
   return data.session;
 }
 
-export async function signInWithEmail(email: string) {
-  if (!supabase) throw new Error("Supabase 未配置正确，请检查 .env 中的 URL 和 anon key。");
-  const { error } = await supabase.auth.signInWithOtp({
-    email,
-    options: {
-      emailRedirectTo: window.location.origin + window.location.pathname
-    }
-  });
+export async function signInWithEmailPassword(email: string, password: string): Promise<Session | null> {
+  const client = requireSupabase();
+  const { data, error } = await client.auth.signInWithPassword({ email, password });
   if (error) throw error;
+  return data.session;
+}
+
+export async function signUpWithEmailPassword(email: string, password: string): Promise<Session | null> {
+  const client = requireSupabase();
+  const { data, error } = await client.auth.signUp({ email, password });
+  if (error) throw error;
+  return data.session;
 }
 
 export async function signOut() {

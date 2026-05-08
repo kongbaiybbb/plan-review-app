@@ -1,5 +1,5 @@
 import Dexie, { type Table } from "dexie";
-import type { Category, ReviewEntry, RewardClaim, RewardRule, Task } from "./types";
+import type { Category, JournalEntry, ReviewEntry, RewardClaim, RewardRule, Task } from "./types";
 
 const defaultStamp = "2026-01-01T00:00:00.000Z";
 
@@ -16,6 +16,7 @@ class PlanReviewDatabase extends Dexie {
   reviewEntries!: Table<ReviewEntry, string>;
   rewardRules!: Table<RewardRule, string>;
   rewardClaims!: Table<RewardClaim, string>;
+  journalEntries!: Table<JournalEntry, string>;
 
   constructor() {
     super("personal-plan-review");
@@ -48,6 +49,14 @@ class PlanReviewDatabase extends Dexie {
           )
         );
       });
+    this.version(3).stores({
+      categories: "id, name, updatedAt, deletedAt",
+      tasks: "id, date, categoryId, completed, updatedAt, deletedAt",
+      reviewEntries: "id, date, categoryId, taskId, isAdHoc, updatedAt, deletedAt",
+      rewardRules: "id, period, active, updatedAt, deletedAt",
+      rewardClaims: "id, ruleId, period, periodKey, updatedAt, deletedAt",
+      journalEntries: "id, date, updatedAt, deletedAt"
+    });
   }
 }
 
@@ -67,6 +76,11 @@ export async function getTasksInRange(start: string, end: string): Promise<Task[
 
 export async function getReviewsInRange(start: string, end: string): Promise<ReviewEntry[]> {
   const entries = await db.reviewEntries.where("date").between(start, end, true, true).sortBy("date");
+  return entries.filter((entry) => !entry.deletedAt);
+}
+
+export async function getJournalEntriesInRange(start: string, end: string): Promise<JournalEntry[]> {
+  const entries = await db.journalEntries.where("date").between(start, end, true, true).sortBy("date");
   return entries.filter((entry) => !entry.deletedAt);
 }
 
@@ -101,7 +115,8 @@ export async function exportAllData() {
     tasks: (await db.tasks.toArray()).filter((item) => !item.deletedAt),
     reviewEntries: (await db.reviewEntries.toArray()).filter((item) => !item.deletedAt),
     rewardRules: await getActiveRewardRules(),
-    rewardClaims: await getActiveRewardClaims()
+    rewardClaims: await getActiveRewardClaims(),
+    journalEntries: (await db.journalEntries.toArray()).filter((item) => !item.deletedAt)
   };
 }
 
@@ -111,18 +126,20 @@ export async function importAllData(payload: {
   reviewEntries?: ReviewEntry[];
   rewardRules?: RewardRule[];
   rewardClaims?: RewardClaim[];
+  journalEntries?: JournalEntry[];
 }) {
   const stamp = nowIso();
-  await db.transaction("rw", [db.categories, db.tasks, db.reviewEntries, db.rewardRules, db.rewardClaims], async () => {
+  await db.transaction("rw", [db.categories, db.tasks, db.reviewEntries, db.rewardRules, db.rewardClaims, db.journalEntries], async () => {
     if (payload.categories) await db.categories.bulkPut(payload.categories.map((item) => ({ ...item, updatedAt: item.updatedAt ?? stamp })));
     if (payload.tasks) await db.tasks.bulkPut(payload.tasks.map((item) => ({ ...item, updatedAt: item.updatedAt ?? stamp })));
     if (payload.reviewEntries) await db.reviewEntries.bulkPut(payload.reviewEntries.map((item) => ({ ...item, updatedAt: item.updatedAt ?? stamp })));
     if (payload.rewardRules) await db.rewardRules.bulkPut(payload.rewardRules.map((item) => ({ ...item, updatedAt: item.updatedAt ?? stamp })));
     if (payload.rewardClaims) await db.rewardClaims.bulkPut(payload.rewardClaims.map((item) => ({ ...item, updatedAt: item.updatedAt ?? stamp })));
+    if (payload.journalEntries) await db.journalEntries.bulkPut(payload.journalEntries.map((item) => ({ ...item, updatedAt: item.updatedAt ?? stamp })));
   });
 }
 
-export type SyncTableName = "categories" | "tasks" | "reviewEntries" | "rewardRules" | "rewardClaims";
+export type SyncTableName = "categories" | "tasks" | "reviewEntries" | "rewardRules" | "rewardClaims" | "journalEntries";
 
 export async function markDeleted(tableName: SyncTableName, id: string) {
   const stamp = nowIso();

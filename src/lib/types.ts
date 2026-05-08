@@ -1,4 +1,4 @@
-export type Period = "week" | "month";
+export type Period = "day" | "week" | "month";
 
 export type SyncFields = {
   updatedAt: string;
@@ -45,6 +45,25 @@ export type RewardClaim = {
   period: Period;
   periodKey: string;
   claimedAt: string;
+} & SyncFields;
+
+export type JournalEntry = {
+  id: string;
+  date: string;
+  moodEmoji?: string;
+  moodText?: string;
+  energyLevel?: number;
+  stressLevel?: number;
+  focusLevel?: number;
+  bodyState?: string;
+  mindState?: string;
+  keyEvents?: string;
+  gratitudeText?: string;
+  reflectionText?: string;
+  tomorrowText?: string;
+  freeText?: string;
+  promptsOpen: boolean;
+  createdAt: string;
 } & SyncFields;
 
 export type CompletionStats = {

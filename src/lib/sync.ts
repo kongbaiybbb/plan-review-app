@@ -1,7 +1,7 @@
 import type { Session } from "@supabase/supabase-js";
 import { db, nowIso } from "./db";
 import { supabase, getSession as getSupabaseSession, isSyncConfigured } from "./supabase";
-import type { Category, Period, ReviewEntry, RewardClaim, RewardRule, SyncFields, Task } from "./types";
+import type { Category, JournalEntry, Period, ReviewEntry, RewardClaim, RewardRule, SyncFields, Task } from "./types";
 
 export type SyncMode = "startup" | "manual" | "after-write";
 
@@ -52,6 +52,23 @@ type RemoteRewardClaim = RemoteBase & {
   period_key: string;
   claimed_at: string;
 };
+type RemoteJournalEntry = RemoteBase & {
+  date: string;
+  mood_emoji?: string | null;
+  mood_text?: string | null;
+  energy_level?: number | null;
+  stress_level?: number | null;
+  focus_level?: number | null;
+  body_state?: string | null;
+  mind_state?: string | null;
+  key_events?: string | null;
+  gratitude_text?: string | null;
+  reflection_text?: string | null;
+  tomorrow_text?: string | null;
+  free_text?: string | null;
+  prompts_open: boolean;
+  created_at: string;
+};
 
 export function chooseLatest<T extends SyncFields>(local: T | undefined, remote: T): T {
   if (!local) return remote;
@@ -97,15 +114,17 @@ async function uploadLocalData(session: Session) {
   await upsertRows("review_entries", (await db.reviewEntries.toArray()).map((item) => reviewToRemote(item, session.user.id)));
   await upsertRows("reward_rules", (await db.rewardRules.toArray()).map((item) => ruleToRemote(item, session.user.id)));
   await upsertRows("reward_claims", (await db.rewardClaims.toArray()).map((item) => claimToRemote(item, session.user.id)));
+  await upsertRows("journal_entries", (await db.journalEntries.toArray()).map((item) => journalToRemote(item, session.user.id)));
 }
 
 async function pullRemoteData(session: Session) {
-  const [categories, tasks, reviews, rules, claims] = await Promise.all([
+  const [categories, tasks, reviews, rules, claims, journals] = await Promise.all([
     selectRows<RemoteCategory>("categories", session.user.id),
     selectRows<RemoteTask>("tasks", session.user.id),
     selectRows<RemoteReviewEntry>("review_entries", session.user.id),
     selectRows<RemoteRewardRule>("reward_rules", session.user.id),
-    selectRows<RemoteRewardClaim>("reward_claims", session.user.id)
+    selectRows<RemoteRewardClaim>("reward_claims", session.user.id),
+    selectRows<RemoteJournalEntry>("journal_entries", session.user.id)
   ]);
 
   await mergeIntoTable(db.categories, categories.map(categoryFromRemote));
@@ -113,6 +132,7 @@ async function pullRemoteData(session: Session) {
   await mergeIntoTable(db.reviewEntries, reviews.map(reviewFromRemote));
   await mergeIntoTable(db.rewardRules, rules.map(ruleFromRemote));
   await mergeIntoTable(db.rewardClaims, claims.map(claimFromRemote));
+  await mergeIntoTable(db.journalEntries, journals.map(journalFromRemote));
 }
 
 async function upsertRows(tableName: string, rows: RemoteBase[]) {
@@ -263,6 +283,53 @@ function claimFromRemote(item: RemoteRewardClaim): RewardClaim {
     period: item.period,
     periodKey: item.period_key,
     claimedAt: item.claimed_at,
+    updatedAt: item.updated_at,
+    deletedAt: cleanDeletedAt(item.deleted_at)
+  };
+}
+
+function journalToRemote(item: JournalEntry, userId: string): RemoteJournalEntry {
+  return {
+    id: item.id,
+    user_id: userId,
+    date: item.date,
+    mood_emoji: item.moodEmoji ?? null,
+    mood_text: item.moodText ?? null,
+    energy_level: item.energyLevel ?? null,
+    stress_level: item.stressLevel ?? null,
+    focus_level: item.focusLevel ?? null,
+    body_state: item.bodyState ?? null,
+    mind_state: item.mindState ?? null,
+    key_events: item.keyEvents ?? null,
+    gratitude_text: item.gratitudeText ?? null,
+    reflection_text: item.reflectionText ?? null,
+    tomorrow_text: item.tomorrowText ?? null,
+    free_text: item.freeText ?? null,
+    prompts_open: item.promptsOpen,
+    created_at: item.createdAt,
+    updated_at: item.updatedAt,
+    deleted_at: item.deletedAt ?? null
+  };
+}
+
+function journalFromRemote(item: RemoteJournalEntry): JournalEntry {
+  return {
+    id: item.id,
+    date: item.date,
+    moodEmoji: item.mood_emoji ?? undefined,
+    moodText: item.mood_text ?? undefined,
+    energyLevel: item.energy_level ?? undefined,
+    stressLevel: item.stress_level ?? undefined,
+    focusLevel: item.focus_level ?? undefined,
+    bodyState: item.body_state ?? undefined,
+    mindState: item.mind_state ?? undefined,
+    keyEvents: item.key_events ?? undefined,
+    gratitudeText: item.gratitude_text ?? undefined,
+    reflectionText: item.reflection_text ?? undefined,
+    tomorrowText: item.tomorrow_text ?? undefined,
+    freeText: item.free_text ?? undefined,
+    promptsOpen: item.prompts_open,
+    createdAt: item.created_at,
     updatedAt: item.updated_at,
     deletedAt: cleanDeletedAt(item.deleted_at)
   };
